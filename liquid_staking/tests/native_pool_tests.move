@@ -4,7 +4,7 @@
 module liquid_staking::native_pool_tests {
 
     use liquid_staking::native_pool::{Self, NativePool};
-    use liquid_staking::cert::{Self, Metadata, CERT};
+    use liquid_staking::whsui::{Self, Metadata, CERT};
     use liquid_staking::ownership::{Self, OperatorCap, OwnerCap};
     use sui::test_scenario::{Self, next_tx, ctx, Scenario};
     use sui::test_utils;

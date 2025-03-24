@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-/// Pool allows exchange SUI for CERT and request to exchange it back at a possibly better rate.
+/// Pool allows exchange SUI for whSUI and request to exchange it back at a possibly better rate.
 /// 
 /// Glossary:
 /// * instant unstake - unstake when user can burn tokens and receive SUI in the same epoch
@@ -18,7 +18,7 @@ module liquid_staking::native_pool {
     use sui::clock::{Self, Clock};
     use sui_system::sui_system::{Self, SuiSystemState};
     use liquid_staking::ownership::{OwnerCap, OperatorCap};
-    use liquid_staking::cert::{Self, CERT, Metadata};
+    use liquid_staking::whsui::{Self, WHSUI, Metadata};
     use liquid_staking::validator_set::{Self, ValidatorSet};
     use liquid_staking::unstake_ticket::{Self, UnstakeTicket};
     use liquid_staking::math;
@@ -51,12 +51,12 @@ module liquid_staking::native_pool {
     struct StakedEvent has copy, drop {
         staker: address,
         sui_amount: u64,
-        cert_amount: u64,
+        whsui_amount: u64,  // Changed from cert_amount to whsui_amount
     }
 
     struct UnstakedEvent has copy, drop {
         staker: address,
-        cert_amount: u64,
+        whsui_amount: u64,  // Changed from cert_amount to whsui_amount
         sui_amount: u64
     }
 
@@ -440,13 +440,13 @@ module liquid_staking::native_pool {
 
     /* Staking logic */
 
-    public entry fun stake(self: &mut NativePool, metadata: &mut Metadata<CERT>, wrapper: &mut SuiSystemState, coin: Coin<SUI>, ctx: &mut TxContext) {
-        let cert = stake_non_entry(self, metadata, wrapper, coin, ctx);
-        transfer::public_transfer(cert, tx_context::sender(ctx));
+    public entry fun stake(self: &mut NativePool, metadata: &mut Metadata<WHSUI>, wrapper: &mut SuiSystemState, coin: Coin<SUI>, ctx: &mut TxContext) {
+        let whsui = stake_non_entry(self, metadata, wrapper, coin, ctx);
+        transfer::public_transfer(whsui, tx_context::sender(ctx));
     }
 
-    // exchange SUI to CERT, add SUI to pending and try to stake pool
-    public fun stake_non_entry(self: &mut NativePool, metadata: &mut Metadata<CERT>, wrapper: &mut SuiSystemState, coin: Coin<SUI>, ctx: &mut TxContext): Coin<CERT> {
+    // exchange SUI to whSUI, add SUI to pending and try to stake pool
+    public fun stake_non_entry(self: &mut NativePool, metadata: &mut Metadata<WHSUI>, wrapper: &mut SuiSystemState, coin: Coin<SUI>, ctx: &mut TxContext): Coin<WHSUI> {
         assert_version(self);
         when_not_paused(self);
 
@@ -454,14 +454,14 @@ module liquid_staking::native_pool {
         assert!(coin_value >= self.min_stake, E_MIN_LIMIT);
 
         let shares = to_shares(self, metadata, coin_value);
-        let minted = cert::mint(metadata, shares, ctx);
+        let minted = whsui::mint(metadata, shares, ctx);
 
         coin::join(&mut self.pending, coin);
 
         event::emit(StakedEvent {
             staker: tx_context::sender(ctx),
             sui_amount: coin_value,
-            cert_amount: shares,
+            whsui_amount: shares,  // Changed from cert_amount to whsui_amount
         });
 
         // stake pool
@@ -486,9 +486,9 @@ module liquid_staking::native_pool {
     }
 
     /// merge ticket with it burning to make instant unstake
-    public entry fun unstake(self: &mut NativePool, metadata: &mut Metadata<CERT>, wrapper: &mut SuiSystemState, cert: Coin<CERT>, ctx: &mut TxContext) {
+    public entry fun unstake(self: &mut NativePool, metadata: &mut Metadata<WHSUI>, wrapper: &mut SuiSystemState, whsui: Coin<WHSUI>, ctx: &mut TxContext) {
         let sender = tx_context::sender(ctx);
-        let ticket = mint_ticket_non_entry(self, metadata, cert, ctx);
+        let ticket = mint_ticket_non_entry(self, metadata, whsui, ctx);
         if (unstake_ticket::is_unlocked(&ticket, ctx)) {
             // instant unstake
             let coin = burn_ticket_non_entry(self, wrapper, ticket, ctx);
@@ -498,32 +498,32 @@ module liquid_staking::native_pool {
         }
     }
 
-    public entry fun mint_ticket(self: &mut NativePool, metadata: &mut Metadata<CERT>, cert: Coin<CERT>, ctx: &mut TxContext) {
-        let ticket = mint_ticket_non_entry(self, metadata, cert, ctx);
+    public entry fun mint_ticket(self: &mut NativePool, metadata: &mut Metadata<WHSUI>, whsui: Coin<WHSUI>, ctx: &mut TxContext) {
+        let ticket = mint_ticket_non_entry(self, metadata, whsui, ctx);
         unstake_ticket::transfer(ticket, tx_context::sender(ctx));
     }
 
-    /// burns CERT and put output amount of SUI to it
+    /// burns whSUI and put output amount of SUI to it
     /// In case if issued ticket supply greater than active stake ticket should be locked until next epoch
-    public fun mint_ticket_non_entry(self: &mut NativePool, metadata: &mut Metadata<CERT>, cert: Coin<CERT>, ctx: &mut TxContext): UnstakeTicket {
+    public fun mint_ticket_non_entry(self: &mut NativePool, metadata: &mut Metadata<WHSUI>, whsui: Coin<WHSUI>, ctx: &mut TxContext): UnstakeTicket {
         assert_version(self);
         when_not_paused(self);
 
         // calculate frozen_to date if we know that to unstake whole TVL we need to wait 1 full epoch
-        let shares = coin::value(&cert);
+        let shares = coin::value(&whsui);
         let unstake_amount = from_shares(self, metadata, shares);
 
         // we can't unstake less than 1 SUI from validator
         assert!(unstake_amount >= ONE_SUI, E_MIN_LIMIT);
 
         // burn shares and deduct it amount from tvl untill ticket burn
-        let burned = cert::burn_coin(metadata, cert);
+        let burned = whsui::burn_coin(metadata, whsui);
         assert!(burned == shares, E_BAD_SHARES);
 
         event::emit(UnstakedEvent {
             staker: tx_context::sender(ctx),
             sui_amount: unstake_amount,
-            cert_amount: shares,
+            whsui_amount: shares,  // Changed from cert_amount to whsui_amount
         });
 
         // charge commission for big unstakes
@@ -663,18 +663,18 @@ module liquid_staking::native_pool {
 
     /* Ratio */
 
-    /// Return the ratio of CERT.
-    public fun get_ratio(self: &NativePool, metadata: &Metadata<CERT>): u256 {
-        math::ratio(cert::get_total_supply_value(metadata), (get_total_staked(self) + get_total_rewards(self) - unstake_ticket::get_total_supply(&self.ticket_metadata)))
+    /// Return the ratio of whSUI.
+    public fun get_ratio(self: &NativePool, metadata: &Metadata<WHSUI>): u256 {
+        math::ratio(whsui::get_total_supply_value(metadata), (get_total_staked(self) + get_total_rewards(self) - unstake_ticket::get_total_supply(&self.ticket_metadata)))
     }
 
-    // converts SUI to CERT
-    public fun to_shares(self: &NativePool, metadata: &Metadata<CERT>, amount: u64): u64 {
+    // converts SUI to whSUI
+    public fun to_shares(self: &NativePool, metadata: &Metadata<WHSUI>, amount: u64): u64 {
         math::to_shares(get_ratio(self, metadata), amount)
     }
 
-    // converts CERT to SUI
-    public fun from_shares(self: &NativePool, metadata: &Metadata<CERT>, shares: u64): u64 {
+    // converts whSUI to SUI
+    public fun from_shares(self: &NativePool, metadata: &Metadata<WHSUI>, shares: u64): u64 {
         math::from_shares(get_ratio(self,  metadata), shares)
     }
 
